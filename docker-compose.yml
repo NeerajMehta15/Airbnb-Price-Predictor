@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # Main API service
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: airbnb-predictor-api
+    ports:
+      - "8000:8000"
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - MODEL_PATH=Model/best_random_forest_model.joblib
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount source code for development (comment out for production)
+      - ./src:/app/src
+      - ./configs:/app/configs
+      - ./Model:/app/Model
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - airbnb-network
+
+  # Optional: Nginx reverse proxy for production
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: airbnb-nginx
+  #   ports:
+  #     - "80:80"
+  #   volumes:
+  #     - ./deployment/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - api
+  #   networks:
+  #     - airbnb-network
+  #   restart: unless-stopped
+
+networks:
+  airbnb-network:
+    driver: bridge
