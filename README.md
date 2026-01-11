@@ -485,15 +485,6 @@ This project is open source and available under the MIT License.
 
 ---
 
-## 🙏 Acknowledgments
-
-- Airbnb for the dataset inspiration
-- AWS for cloud infrastructure
-- FastAPI for the excellent web framework
-- The open-source community
-
----
-
 ## 📞 Support
 
 If you have any questions or issues:
@@ -526,5 +517,3 @@ If you have any questions or issues:
 - **Deployment Time**: ~5 minutes
 
 ---
-
-Made with ❤️ for learning ML engineering and DevOps practices
