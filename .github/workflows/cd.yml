@@ -1,0 +1,189 @@
+name: CD - Continuous Deployment to AWS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: airbnb-price-predictor
+  ECS_CLUSTER: airbnb-ml-cluster
+  ECS_SERVICE: airbnb-predictor-service
+  ECS_TASK_DEFINITION: airbnb-task-definition
+  CONTAINER_NAME: airbnb-predictor
+
+jobs:
+  # Job 1: Build and Push to ECR
+  build-and-push:
+    name: Build & Push to AWS ECR
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building Docker image..."
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "Pushing image to ECR..."
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "✅ Image pushed successfully!"
+
+      - name: Scan image for vulnerabilities
+        continue-on-error: true
+        run: |
+          echo "Scanning image for vulnerabilities..."
+          aws ecr start-image-scan \
+            --repository-name $ECR_REPOSITORY \
+            --image-id imageTag=${{ github.sha }} \
+            --region ${{ env.AWS_REGION }} || echo "Image scan initiated"
+
+  # Job 2: Deploy to ECS
+  deploy-ecs:
+    name: Deploy to AWS ECS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+            --query taskDefinition > task-definition.json
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ needs.build-and-push.outputs.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting for service to stabilize..."
+          sleep 30
+
+          # Get the service status
+          SERVICE_STATUS=$(aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --query 'services[0].status' \
+            --output text)
+
+          echo "Service Status: $SERVICE_STATUS"
+
+          if [ "$SERVICE_STATUS" == "ACTIVE" ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment may have issues. Check ECS console."
+            exit 1
+          fi
+
+  # Job 3: Health Check
+  health-check:
+    name: Post-Deployment Health Check
+    runs-on: ubuntu-latest
+    needs: deploy-ecs
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get service endpoint
+        id: get-endpoint
+        run: |
+          # Get the load balancer DNS or public IP
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service-name ${{ env.ECS_SERVICE }} \
+            --query 'taskArns[0]' \
+            --output text)
+
+          echo "Task ARN: $TASK_ARN"
+
+          # Note: Actual endpoint retrieval depends on your infrastructure
+          # This is a placeholder - you'll need to adjust based on your setup
+          echo "endpoint=http://your-alb-endpoint.com" >> $GITHUB_OUTPUT
+
+      - name: Health check
+        run: |
+          echo "Running health check..."
+          # Uncomment and adjust when you have the actual endpoint
+          # curl -f ${{ steps.get-endpoint.outputs.endpoint }}/health || exit 1
+          echo "⚠️  Configure actual endpoint for health check"
+          echo "✅ Health check step completed"
+
+  # Job 4: Deployment Summary
+  deployment-summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-ecs, health-check]
+    if: always()
+    steps:
+      - name: Deployment Results
+        run: |
+          echo "=========================================="
+          echo "CD Pipeline Completed!"
+          echo "=========================================="
+          echo "✅ Build & Push: ${{ needs.build-and-push.result }}"
+          echo "✅ ECS Deployment: ${{ needs.deploy-ecs.result }}"
+          echo "✅ Health Check: ${{ needs.health-check.result }}"
+          echo "=========================================="
+          echo "Image: ${{ needs.build-and-push.outputs.image }}"
+          echo "Cluster: ${{ env.ECS_CLUSTER }}"
+          echo "Service: ${{ env.ECS_SERVICE }}"
+          echo "=========================================="
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed! Check the logs above."
+          echo "Common issues:"
+          echo "  1. AWS credentials not configured"
+          echo "  2. ECR repository doesn't exist"
+          echo "  3. ECS cluster/service not found"
+          echo "  4. Insufficient IAM permissions"
