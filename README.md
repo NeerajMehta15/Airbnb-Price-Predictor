@@ -44,7 +44,6 @@ This project demonstrates a complete ML engineering workflow - from exploratory 
 - 🎯 Multi-class classification (7 price categories)
 - 🌲 Random Forest classifier with hyperparameter tuning
 - 📊 Comprehensive feature engineering
-- 🔍 63.59% accuracy on Singapore Airbnb data
 
 ### Engineering
 - 🚀 FastAPI REST API with automatic documentation
